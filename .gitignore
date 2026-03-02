@@ -1,0 +1,55 @@
+# Python 缓存文件
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+conda_env/
+
+# 模型权重&大文件（禁止提交大文件到git，避免仓库臃肿）
+models/*.pth
+models/*.pt
+models/*.bin
+models/*.safetensors
+
+# 视频&数据文件
+data/*.mp4
+data/*.avi
+data/*.mov
+data/*.json
+data/*.csv
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+logs/
+*.log
