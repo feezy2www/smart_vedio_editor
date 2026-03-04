@@ -40,6 +40,9 @@ data/*.mov
 data/*.json
 data/*.csv
 
+# 文档
+docs/*.md
+
 # IDE 配置
 .vscode/
 .idea/

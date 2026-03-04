@@ -1,8 +1,10 @@
+import os
 import decord
 from decord import VideoReader, cpu
 import numpy as np
 import torch
-from typing import Dict, Tuple, List, Optional
+import time
+from typing import Dict, Tuple, List, Optional, Union
 from transformers import CLIPImageProcessor
 
 
@@ -11,7 +13,7 @@ class VideoProcessor:
     feezy学习视频编辑系统, 提供视频处理和分析功能
     新增功能：
     1. 均匀抽帧：
-    2. 返回元数据: get_vedio
+    2. 返回元数据: get_video
     """
     def __init__(self, video_path: str, num_threads: int = 4):
         """
@@ -19,12 +21,14 @@ class VideoProcessor:
         :param video_path: 视频路径
         :param num_threads: Decord读取线程数, 默认4线程加速
         """
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"视频文件不存在: {video_path}")
+        
         self.video_path = video_path
         self.num_threads = num_threads
 
         # 初始化一次VideoReader，上下文初始设置为 cpu之后改
         self.vr = VideoReader(video_path, num_threads = num_threads, ctx = cpu(0))
-        
         # 获取基本信息
         self._total_frames = len(self.vr) # 总帧数
         self._fps = self.vr.get_avg_fps() # 帧率
@@ -75,7 +79,7 @@ class VideoProcessor:
                 interval = max(1, int(self._fps / fps))
                 frame_indices = list(range(0, self._total_frames, interval))
             else:
-                inteval = max(1, int(self._fps))
+                interval = max(1, int(self._fps))
                 frame_indices = list(range(0, self._total_frames, interval))
             # 批量读取帧（decord最快的方法）
             frames = self.vr.get_batch(frame_indices).asnumpy()
@@ -93,8 +97,9 @@ class VideoProcessor:
         :param frames: 抽帧后的numpy数组(N, H, W, 3)
         :return: 预处理后的Pytorch张量(N, 3, H', W')，适合模型输入
         """
-        inputs = self.clip_processor(images = list(frames), return_tensors="pt")
+        inputs = self.clip_processor(images = list(frames), return_tensors="pt")      
         return inputs['pixel_values']
+    
     def extract_and_preprocess(
             self,
             mode: str = "uniform",
@@ -108,64 +113,94 @@ class VideoProcessor:
         """
         frames = self.extract_frames(mode = mode, num_frames = num_frames, fps = fps)
         return self.frame_preprocess(frames)
+    def preprocess_video(
+        self,
+        frame_mode: str = "uniform",
+        frame_count: Optional[int] = 16,
+        frame_fps: Optional[float] = None,
+        verbose: bool = True
+    ) -> Dict:
+        """
+        端到端视频预处理整合
+        整合流程：视频读取 → 信息提取 → 抽帧 → 帧预处理 → 结构化输出
+        :param frame_mode: 抽帧模式，'uniform' 或 'keyframe'
+        :param frame_count: 均匀抽帧时指定总帧数（和frame_fps二选一）
+        :param frame_fps: 均匀抽帧时指定每秒帧数（和frame_count二选一）
+        :param verbose: 是否打印进度信息
+        :return: 结构化字典，包含模型输入、元数据、抽帧信息
+        """
+        if verbose:
+            print("=" * 60)
+            print(f"[1/4] 正在初始化视频处理器")
+            print(f"      视频路径: {self.video_path}")
+            print(f"      视频信息: {self._duration:.1f}秒, {self._fps:.1f}fps, {self._total_frames}帧")
+        
+        # 1. 抽帧
+        if verbose:
+            target_desc = f"总帧数={frame_count}" if frame_count else f"帧率={frame_fps}fps"
+            print(f"\n[2/4] 正在抽帧: 模式={frame_mode}, {target_desc}")
+        frames = self.extract_frames(mode=frame_mode, num_frames=frame_count, fps=frame_fps)
+        if verbose:
+            print(f"      实际抽帧数量: {frames.shape[0]}")
+            print(f"      单帧原始尺寸: {frames.shape[1:]}")
+        
+        # 2. 帧预处理
+        if verbose:
+            print(f"\n[3/4] 正在进行帧预处理（适配CLIP输入）")
+        pixel_values = self.frame_preprocess(frames)
+        if verbose:
+            print(f"      预处理后张量shape: {pixel_values.shape}")
+            print(f"      张量数据类型: {pixel_values.dtype}")
+        
+        # 3. 组装结构化返回结果
+        result = {
+            "model_input": pixel_values,  # 模型可直接输入的张量
+            "video_info": self.get_video_info(),  # 视频元数据
+            "num_frames": frames.shape[0],  # 实际抽帧数量
+            "frame_shape_original": frames.shape[1:],  # 单帧原始shape
+            "frame_shape_processed": tuple(pixel_values.shape[1:])  # 单帧预处理后shape
+        }
+        
+        if verbose:
+            print(f"\n[4/4] 预处理完成！")
+            print("=" * 60)
+        
+        return result
 
-    def extract_frame(self, frame_idx: int) -> np.ndarray:
-        """
-        快速读取视频的任意一帧
-        :param frame_idx: 帧索引
-        :return: 该帧的numpy数组 (H, W, 3)
-        """
-        # 边界检查一下
-        if frame_idx < 0 or frame_idx >= self._total_frames:
-            raise ValueError(f"Frame index out of range: {frame_idx}, must be in [0, {self._total_frames - 1}]")
-        return self.vr[frame_idx].asnumpy()
+
+
 
 if __name__ == "__main__":
-    # 测试
     test_video_path = "data/test.mp4"
 
-    print("=" * 50)
-    test_video = VideoProcessor(test_video_path)
-
-    info = test_video.get_video_info()
-    print("视频元数据")
-
-    for key, value in info.items():
-        print(f" {key}: {value}")
-
-    print("=" * 60)
-    print("任务3：视频抽帧与帧预处理模块测试")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("任务四：端到端预处理模块整合测试")
+    print("=" * 70)
     
-    # 1. 初始化
-    print("\n[1/5] 初始化VideoProcessor...")
-    processor = VideoProcessor(test_video_path)
-    info = processor.get_video_info()
-    print(f"视频信息：{info['duration']}秒, {info['fps']}fps, {info['total_frames']}帧")
-    
-    # 2. 测试均匀抽帧（按总帧数）
-    print("\n[2/5] 测试均匀抽帧（指定抽16帧）...")
-    frames_uniform = processor.extract_frames(mode="uniform", num_frames=16)
-    print(f"抽帧结果shape: {frames_uniform.shape}")
-    
-    # 3. 测试I帧抽帧
-    print("\n[3/5] 测试I帧抽帧...")
-    frames_keyframe = processor.extract_frames(mode="keyframe")
-    print(f"I帧抽帧结果shape: {frames_keyframe.shape}")
-    
-    # 4. 测试帧预处理
-    print("\n[4/5] 测试帧预处理（适配CLIP输入）...")
-    pixel_values = processor.frame_preprocess(frames_uniform)
-    print(f"预处理后张量shape: {pixel_values.shape}")
-    print(f"张量数据类型: {pixel_values.dtype}")
-    print(f"张量值范围: [{pixel_values.min():.2f}, {pixel_values.max():.2f}]")
-    
-    # 5. 测试端到端抽帧+预处理
-    print("\n[5/5] 测试端到端（抽帧+预处理一步到位）...")
-    model_input = processor.extract_and_preprocess(mode="uniform", fps=1)
-    print(f"端到端输出shape: {model_input.shape}")
-    
-    print("\n" + "=" * 60)
-    print("✅ 所有测试通过！任务3完成。")
-    print("=" * 60)
+    try:
+        # 1. 初始化
+        print("\n>>> 步骤1：初始化VideoProcessor")
+        processor = VideoProcessor(test_video_path, num_threads=8)
+        
+        # 2. 【任务四核心】测试端到端预处理
+        print("\n>>> 步骤2：调用端到端preprocess_video()")
+        result = processor.preprocess_video(
+            frame_mode="uniform",
+            frame_count=16,
+            verbose=True
+        )
+        
+        # 3. 验证结果
+        print("\n>>> 验证输出结果：")
+        print(f"  ✅ 模型输入张量shape: {result['model_input'].shape}")
+        print(f"  ✅ 视频时长: {result['video_info']['duration']}秒")
+        print(f"  ✅ 实际抽帧数量: {result['num_frames']}")
+        print(f"  ✅ 预处理后单帧shape: {result['frame_shape_processed']}")
+        
+        print("\n" + "=" * 70)
+        print("🎉 任务四测试通过！端到端预处理模块整合完成。")
+        print("=" * 70)
+        
+    except Exception as e:
+        print(f"\n❌ 测试失败: {e}")
 
